@@ -5,8 +5,8 @@
 # specifically using "ranger". First, a bulk load of all of the packages for
 # this run is necessary:
 
-ls <- c("tidyverse", "terra", "sf", "raster", "foreach", "caret", "ranger", 
-        "GSIF", "gdalUtils", "MLmetrics")
+ls <- c("tidyverse", "terra", "sf", "stars", "raster", "foreach", "caret", 
+        "ranger", "GSIF", "gdalUtils", "MLmetrics")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
