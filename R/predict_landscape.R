@@ -27,6 +27,9 @@ predict_landscape <- function(
   
   source('./R/tile_index.R')
   
+  lapply(c("tidyverse", "stars", "GSIF", "foreach", "terra"), 
+         require, character.only = TRUE)
+  
   if(missing(model) || !class(model) %in% c("train", "C5.0"))
     stop("A valid C5.0 or caret model object is required to proceed.")
   
@@ -51,7 +54,7 @@ predict_landscape <- function(
   
   # Count NA values in rasters data to determine best layer to use for masking
   mask_layer <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-    cat(paste0("Counting NA values in ", names(covariates[[i]]), 
+    cat(paste0("\rCounting NA values in ", names(covariates[[i]]), 
                " [", i, " of ", nlyr(covariates), "]\n"))
     new <- subset(covariates, i) * 0
     data.frame(layer = names(new), 
@@ -82,29 +85,40 @@ predict_landscape <- function(
     
     # Do a test run on a single layer, if any variable is all NA then return to
     # top of loop
-    r <- stars::read_stars(cov[1],
-                           RasterIO = list(nXOff  = t$offset.x[1] + 1, 
-                                           nYOff  = t$offset.y[1] + 1,
-                                           nXSize = t$region.dim.x[1],
-                                           nYSize = t$region.dim.y[1]))
+    r <- stars::read_stars(
+      cov[1], RasterIO = list(nXOff  = t$offset.x[1] + 1, 
+                              nYOff  = t$offset.y[1] + 1,
+                              nXSize = t$region.dim.x[1],
+                              nYSize = t$region.dim.y[1]))
     
     if(!any(sapply(r, function(x) all(is.na(x))))) {
       # Load all tile data from each raster, if any variable is all NA then
-      # return to top of loop
-      cat("\n...loading new data (from rasters)...")
-      r <- stars::read_stars(cov,
-                             RasterIO = list(nXOff  = t$offset.x[1] + 1, 
-                                             nYOff  = t$offset.y[1] + 1,
-                                             nXSize = t$region.dim.x[1],
-                                             nYSize = t$region.dim.y[1])) %>% 
+      # return to top of loop. Handle errors where necessary
+      cat("\r...Loading raster data...")
+      r <- tryCatch({
+        stars::read_stars(
+          cov, RasterIO = list(nXOff  = t$offset.x[1] + 1,
+                               nYOff  = t$offset.y[1] + 1,
+                               nXSize = t$region.dim.x[1],
+                               nYSize = t$region.dim.y[1]))
+      }, error = function(e) {
+        lapply(cov, stars::read_stars, RasterIO = list(
+          nXOff  = t$offset.x[1] + 1, 
+          nYOff  = t$offset.y[1] + 1,
+          nXSize = t$region.dim.x[1],
+          nYSize = t$region.dim.y[1])) %>% 
+          lapply("[[", 1) %>%
+          stars::st_as_stars(dimensions = stars::st_dimensions(r), 
+                             coordinates = st_coordinates(r))}) %>% 
         magrittr::set_names(names(covariates))
-      cat("done!")
+      
+      cat("done!\n")
       
     }
     
     if(any(sapply(r, function(x) all(is.na(x))))) {
       
-      cat("\nSome variables with all NA values, skipping tile...")
+      cat("\nSome variables with all NA values, skipping tile...\n")
       out_files <- NULL
       
     } else {
@@ -126,7 +140,7 @@ predict_landscape <- function(
       #   replace(is.na(.), 0)
 
       # Carry out model prediction and format depending on predict type
-      cat("\n...modelling outcomes (predicting)...")
+      cat("\r...Predicting outcomes...\n")
       if(type != "prob") {
         pred <- predict(model, sf::st_drop_geometry(rsf))
       } else {
@@ -164,7 +178,7 @@ predict_landscape <- function(
       }
       
       # Set up subdirectories for rastertile outputs
-      cat("\n...Exporting raster tiles...")
+      cat("\r...Exporting raster tiles...\n")
       
       # Save tile (each pred item saved)
       out_files <- foreach(j = 1:length(keep), .combine = c) %do% {
@@ -183,10 +197,10 @@ predict_landscape <- function(
       
     }
   
-  cat("\nAll predicted tiles generated")
+  cat("\nAll predicted tiles generated\n")
   
   # Mosaic Tiles
-  cat("\nGenerating raster mosaics")
+  cat("\rGenerating raster mosaics\n\n")
   
   # Don't want to display a bunch of progress bars here, so turn that off for
   # the time being
@@ -195,7 +209,7 @@ predict_landscape <- function(
   
   pred_out <- foreach(k = unique(dirname(tile_files)), .combine = c) %do% {
     
-    cat(paste("\nMosaicking", basename(k), "tiles"))
+    cat(paste("\rMosaicking", basename(k), "tiles", "\n"))
     
     # In order to properly mask the layer, the CRS and extents need to match 
     # perfectly, hence the resampling step
