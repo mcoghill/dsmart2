@@ -37,6 +37,8 @@ predict_landscape <- function(
     stop("A SpatRaster object of the raster covariates is required to run predictions.
        Additionally, the layers should be the same as the model variables.")
   
+  if(is.null(mask)) mask <- 1
+  
   # Create a polygon of the masking layer
   mask_poly <- terra::as.polygons(subset(covariates, mask) * 0) %>% 
     as("Spatial") %>% 
