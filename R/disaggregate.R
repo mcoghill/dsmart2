@@ -156,7 +156,7 @@ disaggregate <- function(
   output <- base::list()
   
   # Save start time
-  output$timing <- base::list(start = base::date())
+  output$timing <- base::list(start = Sys.time())
   
   # Check arguments before proceeding
   messages <- c("Attention is required with the following arguments:\n")
@@ -508,7 +508,7 @@ disaggregate <- function(
   }
   
   # Save finish time
-  output$timing$finish <- base::date()
+  output$timing$finish <- Sys.time()
   
   # Return output
   return(output)
