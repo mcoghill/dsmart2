@@ -128,7 +128,11 @@ dsmart <- function(
   covariates, polygons, composition, rate = 15, reals = 100, 
   observations = NULL, method.sample = "by_polygon", method.allocate = "weighted", 
   method.model = NULL, args.model = NULL, strata = NULL, nprob = 3, 
-  outputdir = getwd(), stub = NULL, factors = NULL, type = "raw") {
+  outputdir = getwd(), stub = NULL, factors = NULL, type = "raw", mask = NULL) {
+  
+  # Requires the following packages:
+  sapply(c("tidyverse", "terra"), 
+         require, character.only = TRUE)[0]
   
   # Source external functions used in this script
   source("./R/disaggregate.R")
@@ -151,7 +155,18 @@ dsmart <- function(
   
   # Create output directory
   outputdir <- file.path(outputdir)
-  dir.create(file.path(outputdir, "output"), showWarnings = FALSE)
+  ndirs <- length(dir(outputdir, pattern = "output"))
+  if(ndirs > 1) {
+    last <- max(as.numeric(
+      gsub("\\D", "", dir(outputdir, pattern = "output"))), na.rm = TRUE) + 1
+    subdir <- paste0("output_", formatC(last, width = 3, format = "d", flag = 0))
+  } else {
+    nsubdirs <- length(dir(file.path(outputdir, "output")))
+    subdir <- ifelse(nsubdirs > 1, 
+                     paste0("output_", formatC(1, width = 3, format = "d", flag = 0)), 
+                     "output")
+  }
+  dir.create(file.path(outputdir, subdir), showWarnings = FALSE)
   
   # Write function call to text file as a means of preserving the parameters
   # that were submitted to the dsmart function for the current run.
@@ -159,7 +174,7 @@ dsmart <- function(
   # from the called function as a list element together with other output.
   base::match.call() %>% 
     base::deparse() %>% 
-    base::write(file = file.path(outputdir, "output", "dsmart_function_call.txt"))
+    base::write(file = file.path(outputdir, subdir, "dsmart_function_call.txt"))
   
   # Carry out spatial disaggregation
   output$disaggregate <- disaggregate(
@@ -168,7 +183,7 @@ dsmart <- function(
     observations = observations, method.sample = method.sample, 
     method.allocate = method.allocate, method.model = method.model, 
     args.model = args.model, strata = strata, outputdir = outputdir, 
-    stub = stub, factors = factors, type = type)
+    stub = stub, factors = factors, type = type, mask = mask)
   
   # If raw class predictions are used, load realisations to SpatRaster
   if(type != "prob") {

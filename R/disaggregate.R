@@ -142,7 +142,11 @@ disaggregate <- function(
   covariates, polygons, composition, rate = 15, reals = 100, 
   observations = NULL, method.sample = "by_polygon", method.allocate = "weighted", 
   method.model = NULL, args.model = NULL, strata = NULL, outputdir = getwd(), 
-  stub = NULL, factors = NULL, type = "raw", predict = TRUE) {
+  stub = NULL, factors = NULL, type = "raw", mask = NULL, predict = TRUE) {
+  
+  # Requires the following packages:
+  sapply(c("tidyverse", "stars", "terra"), 
+         require, character.only = TRUE)[0]
   
   # Source external functions used in this script
   source("./R/helpers.R")
@@ -208,7 +212,7 @@ disaggregate <- function(
     } else {
       args.model$trControl$classProbs <- FALSE
     }
-  }
+  } else require(C50)
   
   # Set stub to "" if NULL
   if(is.null(stub)) {
@@ -217,6 +221,19 @@ disaggregate <- function(
     stub <- ""
   }  else if(!(substr(stub, nchar(stub), nchar(stub)) == "_")) {
     stub <- paste0(stub, "_")
+  }
+  
+  # Get masking layer if not specified already
+  if(is.null(mask)) {
+    mask <- sapply(names(covariates), function(x) {
+      cat(paste0("\rCounting NA values in ", x, " [", 
+                 which(x == names(covariates)), 
+                 " of ", nlyr(covariates), "]\n"))
+      unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+      data.frame(data_cells = .) %>% 
+      rownames_to_column("layer") %>% 
+      dplyr::slice_max(data_cells, with_ties = FALSE) %>% 
+      dplyr::pull(layer)
   }
   
   # Save function call
@@ -230,14 +247,28 @@ disaggregate <- function(
   
   # Create subdirectories to store results in
   outputdir <- file.path(outputdir)
-  dir.create(file.path(outputdir, "output"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, "output", "realisations"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, "output", "models"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, "output", "probabilities"), showWarnings = FALSE)
+  ndirs <- length(dir(outputdir, pattern = "output"))
+  if(ndirs > 1) {
+    last <- max(as.numeric(
+      gsub("\\D", "", dir(outputdir, pattern = "output"))), na.rm = TRUE)
+    subdir <- paste0("output_", formatC(last, width = 3, format = "d", flag = 0))
+    nsubdirs <- length(dir(file.path(outputdir, subdir)))
+    if(nsubdirs > 1) 
+      subdir <- paste0("output_", formatC(last + 1, width = 3, format = "d", flag = 0))
+  } else {
+    nsubdirs <- length(dir(file.path(outputdir, "output")))
+    subdir <- ifelse(nsubdirs > 1, 
+                     paste0("output_", formatC(1, width = 3, format = "d", flag = 0)), 
+                     "output")
+  }
+  dir.create(file.path(outputdir, subdir), showWarnings = FALSE)
+  dir.create(file.path(outputdir, subdir, "realisations"), showWarnings = FALSE)
+  dir.create(file.path(outputdir, subdir, "models"), showWarnings = FALSE)
+  dir.create(file.path(outputdir, subdir, "probabilities"), showWarnings = FALSE)
   
   # Save output locations
   output$locations <- list(
-    root = file.path(outputdir, "output"), 
+    root = file.path(outputdir, subdir), 
     realisations = c(), 
     models = c())
   
@@ -250,7 +281,7 @@ disaggregate <- function(
   
   # Since we only really need the first column of the polygons SpatialPolygonsDataFrame,
   # drop all its other attributes and rename the first column to "poly"
-  polygons <- polygons[, 1] %>% magrittr::set_names("poly")
+  polygons <- polygons[, 1] %>% stats::setNames("poly")
   
   # Make sure that there are no missing values in map unit composition
   polys_to_remove <- composition %>% stats::complete.cases() %>% 
@@ -270,7 +301,7 @@ disaggregate <- function(
   }
   
   # Write covariate names to file
-  write.table(names(covariates), file.path(outputdir, "output", 
+  write.table(names(covariates), file.path(outputdir, subdir, 
                                            paste0(stub, "covariate_names.txt")), 
               quote = FALSE, sep = ",", row.names = FALSE, col.names = FALSE)
   
@@ -291,19 +322,19 @@ disaggregate <- function(
   }
   
   # Make sure that there are no missing values in samples
-  samples <- samples %>% complete.cases() %>% dplyr::filter(samples, .)
+  samples <- tidyr::drop_na(samples)
   
   # If there are observations, get their covariates
   if(!(is.null(observations))) {
     names(observations) <- c("x", "y", "class")
     observations <- .observations(observations, covariates)
-    write.table(observations, file.path(outputdir, "output", 
+    write.table(observations, file.path(outputdir, subdir, 
                                         paste0(stub, "observations_with_covariates.txt")), 
                 sep = ",", quote = FALSE, col.names = TRUE, row.names = FALSE)
   }
   
   # Write samples to text file
-  write.table(samples, file.path(outputdir, "output", paste0(stub, "virtual_samples.txt")), 
+  write.table(samples, file.path(outputdir, subdir, paste0(stub, "virtual_samples.txt")), 
               sep = ",", quote = FALSE, col.names = TRUE, row.names = FALSE)
   
   # We submit the target classes to C5.0 as a factor. To do that, we need to 
@@ -328,9 +359,9 @@ disaggregate <- function(
   lookup <- data.frame(name = levs, code = 1:length(levs), stringsAsFactors = FALSE)
   
   # Write lookup table to file
-  write.table(lookup, file.path(outputdir, "output", paste0(stub, "lookup.txt")), 
+  write.table(lookup, file.path(outputdir, subdir, paste0(stub, "lookup.txt")), 
               sep = ",", quote = FALSE, col.names = TRUE, row.names = FALSE)
-  output$locations$lookup <- file.path(outputdir, "output", paste0(stub, "lookup.txt"))
+  output$locations$lookup <- file.path(outputdir, subdir, paste0(stub, "lookup.txt"))
   
   # Process realisations
   for (j in 1:reals) {
@@ -385,15 +416,15 @@ disaggregate <- function(
     }
     
     # Save model to text file
-    model_path <- file.path(
-      outputdir, "output", "models", 
+    model_dir <- file.path(
+      outputdir, subdir, "models", 
       paste0(stub, "model_", formatC(j, width = nchar(reals), format = "d", flag = "0")))
-    cat(out, file = paste0(model_path, ".txt"), sep = "\n", append = TRUE)
+    cat(out, file = paste0(model_dir, ".txt"), sep = "\n", append = FALSE)
     
     # Save model to rdata file
-    save(model, file = paste0(model_path, ".RData"))
+    save(model, file = paste0(model_dir, ".RData"))
     output$locations$models <- c(
-      output$locations$models, paste0(model_path, ".RData")
+      output$locations$models, paste0(model_dir, ".RData")
     )
     
     # Model prediction using tiling method
@@ -403,7 +434,7 @@ disaggregate <- function(
         # and save it to raster.
         r1 <- predict_landscape(
           model, covariates, tilesize = 500,
-          outDir = file.path(outputdir, "tiles"), type = type) 
+          outDir = file.path(outputdir, "tiles"), type = type, mask = mask) 
         
         # If levels were dropped from soil_class in order to use the train function,
         # the prediction raster must be reclassified in order to ensure that the
@@ -411,13 +442,13 @@ disaggregate <- function(
         if(zeroes == TRUE & is.null(method.model) == FALSE) {
           r1 <- terra::classify(
             r1, rcl = rclt, filename = file.path(
-              outputdir, "output", "realisations", 
+              outputdir, subdir, "realisations", 
               paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
                                                    format = "d", flag = "0"), ".tif")), 
             overwrite = TRUE, wopt = list(datatype = "INT2S"))
         } else {
           r1 <- terra::writeRaster(r1, filename = file.path(
-            outputdir, "output", "realisations", 
+            outputdir, subdir, "realisations", 
             paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
                                                  format = "d", flag = "0"), ".tif")), 
             overwrite = TRUE, wopt = list(datatype = "INT2S"))
@@ -430,13 +461,9 @@ disaggregate <- function(
           # function, the SpatRaster can be used as it is.
           r1 <- predict_landscape(
             model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob")
-          
-          # When "type" for predict_landscape is "prob", the output is a file 
-          # list for each soil_class probability
-          r1 <- rast(grep("pred.*..tif$", r1, value = TRUE, invert = TRUE)) %>% 
-            writeRaster(file.path(
-              outputdir, "output", "realisations",
+            outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
+          r1 <- writeRaster(r1, file.path(
+              outputdir, subdir, "realisations",
               paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
                                                    format = "d", flag = "0"), ".tif")),
               overwrite = TRUE)
@@ -447,23 +474,23 @@ disaggregate <- function(
           # inserted in the SpatRaster. First, the SpatRaster is predicted as above.
           tmp1 <- predict_landscape(
             model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob")
+            outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
           
           # Then, a raster with 0's is calculated (the missing levels have 0 
           # probability for the realisation in question)
-          tmp2 <- (terra::rast(tmp1[1]) * 0) %>% 
+          tmp2 <- (subset(tmp1, 1) * 0) %>% 
             writeRaster(tempfile(pattern = "spat_", fileext = ".tif"))
           
           # The rasters are then all arranged into a single SpatRaster
-          r1 <- foreach(i = 1:nrow(lookup), .combine = c) %do% {
+          r1 <- do.call(c, lapply(1:nrow(lookup), function(i) {
             if(i %in% rclt[, 2]) {
-              rast(tmp1[which(rclt[, 2] == i)])
+              subset(tmp1, which(rclt[, 2] == i))
             } else {
               tmp2
             }
-          } %>% magrittr::set_names(lookup$name) %>% 
+          })) %>% stats::setNames(lookup$name) %>% 
             writeRaster(file.path(
-              outputdir, "output", "realisations",
+              outputdir, subdir, "realisations",
               paste0(stub, "realisation_", formatC(j, width = nchar(reals),
                                                    format = "d", flag = "0"), ".tif")), 
               overwrite = TRUE)

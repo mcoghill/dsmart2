@@ -5,16 +5,15 @@
 # specifically using "ranger". First, a bulk load of all of the packages for
 # this run is necessary:
 
-ls <- c("tidyverse", "terra", "sf", "stars", "raster", "foreach", "caret", 
-        "ranger", "GSIF", "gdalUtils", "MLmetrics")
+ls <- c("tidyverse", "terra", "stars", "raster", "caret", "ranger", "MLmetrics")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
 
 # Make sure terra package is up to date! This may take a moment
-if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
+if(compareVersion(as.character(packageVersion("terra")), "1.0-7") < 0)
   install.packages("terra")
-lapply(ls, library, character.only = TRUE)[0]
+invisible(lapply(ls, library, character.only = TRUE)[0])
 rm(ls, new.packages)
 
 # Load custom DSMART files
@@ -64,7 +63,7 @@ dsmart_default <- rdsmart::dsmart(
   outputdir = outputdir, 
   cpus = parallel::detectCores()
 )
-# That took 5.5 minutes
+# That took 6 minutes, 3 times longer than dsmart2
 
 
 # debugging
@@ -86,4 +85,4 @@ factors = NULL
 type = "raw"
 tilesize = 500
 outDir = file.path(outputdir, "tiles")
-
+mask = NULL
