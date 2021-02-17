@@ -225,14 +225,10 @@ disaggregate <- function(
   
   # Get masking layer if not specified already
   if(is.null(mask)) {
-    mask <- sapply(names(covariates), function(x) {
-      cat(paste0("\rCounting NA values in ", x, " [", 
-                 which(x == names(covariates)), 
-                 " of ", nlyr(covariates), "]\n"))
-      unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
-      data.frame(data_cells = .) %>% 
-      rownames_to_column("layer") %>% 
-      dplyr::slice_max(data_cells, with_ties = FALSE) %>% 
+    mask <- data.frame(freq(covariates, value = NA)) %>% 
+      dplyr::mutate(layer = names(covariates)[layer],
+                    count = ncell(covariates) - count) %>% 
+      dplyr::slice_max(count, with_ties = FALSE) %>% 
       dplyr::pull(layer)
   }
   
@@ -462,11 +458,12 @@ disaggregate <- function(
           r1 <- predict_landscape(
             model, covariates, tilesize = 500,
             outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
+          r1 <- subset(r1, 1:nrow(lookup))
           r1 <- writeRaster(r1, file.path(
-              outputdir, subdir, "realisations",
-              paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
-                                                   format = "d", flag = "0"), ".tif")),
-              overwrite = TRUE)
+            outputdir, subdir, "realisations",
+            paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
+                                                 format = "d", flag = "0"), ".tif")),
+            overwrite = TRUE)
           
         } else {
           # If levels were dropped from soil_class in order to use the train 
@@ -478,11 +475,12 @@ disaggregate <- function(
           
           # Then, a raster with 0's is calculated (the missing levels have 0 
           # probability for the realisation in question)
-          tmp2 <- (subset(tmp1, 1) * 0) %>% 
-            writeRaster(tempfile(pattern = "spat_", fileext = ".tif"))
+          tmp2 <- (subset(tmp1, 1) * 0)
+          if(sources(tmp2)[, "source"] == "")
+            tmp2 <- writeRaster(tmp2, tempfile(pattern = "spat_", fileext = ".tif"))
           
           # The rasters are then all arranged into a single SpatRaster
-          r1 <- do.call(c, lapply(1:nrow(lookup), function(i) {
+          r1 <- rast(lapply(1:nrow(lookup), function(i) {
             if(i %in% rclt[, 2]) {
               subset(tmp1, which(rclt[, 2] == i))
             } else {
