@@ -223,15 +223,6 @@ disaggregate <- function(
     stub <- paste0(stub, "_")
   }
   
-  # Get masking layer if not specified already
-  if(is.null(mask)) {
-    mask <- data.frame(freq(covariates, value = NA)) %>% 
-      dplyr::mutate(layer = names(covariates)[layer],
-                    count = ncell(covariates) - count) %>% 
-      dplyr::slice_max(count, with_ties = FALSE) %>% 
-      dplyr::pull(layer)
-  }
-  
   # Save function call
   output$call <- base::match.call()
   
@@ -430,7 +421,7 @@ disaggregate <- function(
         # and save it to raster.
         r1 <- predict_landscape(
           model, covariates, tilesize = 500,
-          outDir = file.path(outputdir, "tiles"), type = type, mask = mask) 
+          outDir = file.path(outputdir, "tiles"), type = type) 
         
         # If levels were dropped from soil_class in order to use the train function,
         # the prediction raster must be reclassified in order to ensure that the
@@ -457,7 +448,7 @@ disaggregate <- function(
           # function, the SpatRaster can be used as it is.
           r1 <- predict_landscape(
             model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
+            outDir = file.path(outputdir, "tiles"), type = "prob")
           r1 <- subset(r1, 1:nrow(lookup))
           r1 <- writeRaster(r1, file.path(
             outputdir, subdir, "realisations",
@@ -471,7 +462,7 @@ disaggregate <- function(
           # inserted in the SpatRaster. First, the SpatRaster is predicted as above.
           tmp1 <- predict_landscape(
             model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
+            outDir = file.path(outputdir, "tiles"), type = "prob")
           
           # Then, a raster with 0's is calculated (the missing levels have 0 
           # probability for the realisation in question)

@@ -183,7 +183,7 @@ dsmart <- function(
     observations = observations, method.sample = method.sample, 
     method.allocate = method.allocate, method.model = method.model, 
     args.model = args.model, strata = strata, outputdir = outputdir, 
-    stub = stub, factors = factors, type = type, mask = mask)
+    stub = stub, factors = factors, type = type)
   
   # If raw class predictions are used, load realisations to SpatRaster
   if(type != "prob") {
@@ -205,6 +205,9 @@ dsmart <- function(
   
   # Save finish time
   output$timing$finish <- Sys.time()
+  
+  # Cleanup temp files
+  terra::tmpFiles(old = TRUE, remove = TRUE)
   
   # Return output
   return(output)
