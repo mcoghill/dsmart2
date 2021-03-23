@@ -6,21 +6,56 @@ Much of the original code can be found at this bitbucket repository: <https://bi
 
 This has been my attempt at creating a DSMART algorithm that runs faster than the original implementation. I found that this was necessary for large datasets, as the [`raster`](https://github.com/rspatial/raster) package was proving to be insufficient for processing in my own work. There has been a lot of recent work on the [`terra`](https://github.com/rspatial/terra) package, which is the `raster` package replacement and uses C++ computing to significantly increase processing speed. Since the DSMART package used the `raster` package throughout its scripting, it was necessary to go through and rewrite the steps to produce the final outputs using the `terra` package. What was once a process that took a few days with the `raster` implementation of DSMART has turned into a process that takes a few hours with the `terra` implementation.
 
+In order to use a non-default model, all you need to do is define the model in `method.model`. Model specific arguments are then placed in a named list, `args.model`. For example:
+
+    method.model <- "randomForest"
+    args.model <- list(mtry = 3, ntree = 100)
+
+These objects are passed into the `disaggregate` function to create the model with your set parameters. A full set of your model specific parameters can be viewed as follows:
+
+    library(mlr3verse)
+    lrn <- lrn("classif.randomForest")
+    lrn$param_set
+
+    <ParamSet>
+                 id    class lower upper nlevels        default value
+     1:       ntree ParamInt     1   Inf     Inf            500      
+     2:        mtry ParamInt     1   Inf     Inf <NoDefault[3]>      
+     3:     replace ParamLgl    NA    NA       2           TRUE      
+     4:     classwt ParamUty    NA    NA     Inf                     
+     5:      cutoff ParamUty    NA    NA     Inf <NoDefault[3]>      
+     6:      strata ParamUty    NA    NA     Inf <NoDefault[3]>      
+     7:    sampsize ParamUty    NA    NA     Inf <NoDefault[3]>      
+     8:    nodesize ParamInt     1   Inf     Inf              1      
+     9:    maxnodes ParamInt     1   Inf     Inf <NoDefault[3]>      
+    10:  importance ParamFct    NA    NA       4          FALSE      
+    11:    localImp ParamLgl    NA    NA       2          FALSE      
+    12:   proximity ParamLgl    NA    NA       2          FALSE      
+    13:    oob.prox ParamLgl    NA    NA       2 <NoDefault[3]>      
+    14:  norm.votes ParamLgl    NA    NA       2           TRUE      
+    15:    do.trace ParamLgl    NA    NA       2          FALSE      
+    16: keep.forest ParamLgl    NA    NA       2           TRUE      
+    17:  keep.inbag ParamLgl    NA    NA       2          FALSE      
+    18: predict.all ParamLgl    NA    NA       2          FALSE      
+    19:       nodes ParamLgl    NA    NA       2          FALSE  
+
+In the above example, anything in the `id` column can be placed in the `args.model` list; for example, `args.model = list(mtry = 3, ntree = 100, importance = "gini")`. See `lrn$param_set$levels` for a list of valid entries that may be used, or read the respective model package help page (i.e.: `?randomForest::randomForest`).
+
 Some important notes on the changes made, starting in the `disaggregate()` coding:
 
-1.  If a repeated cross validation model is used, then the number of model realisations is reduced to 1. This was a liberty that I took upon myself since I figured that in the end it would take a very long time to create multiple repeated cross validation models, and if the models are in an essence "repeated", then I figured that would suffice in place of multiple model realisations. This is likely inaccurate and can be easily removed in lines 205 - 208. This is the only major deviation from the main methodology, all other changes are performed to increase efficiency of processing and to promote the implementation of the `terra` package.
+1.  `mlr3` coding is used to generate all model types, including the `C5.0` defaults. Model types in this program are only allowed to be classification or probability based. No model resampling is performed here - this is a more recent update. Previously, the `caret` package was used to generate models that were not default, and you could perform model resampling within that coding if you wished. I chose to eliminate resampling here for simplicity, since the idea of using this algorithm is to generate multiple model predictions (realisations) anyways, which then get sent to a summarising function. Additionally, the use of `mlr3` model types allowed for a more simple model prediction script since the folks at `mlr3` generate model predictions all in the same object slots no matter the model type. This worked wonderfully.
 
 2.  The methods for sampling polygons all stayed the same, just using the `terra` package implementation over using `raster` and `sp` packages. While writing this, I found it simpler to roll the `.sampler()` function into the `.getVirtualSamples()` function, as it provided a cleaner comparison to the `.getStrtifiedVirtualSamples()` function. Additionally, rather than using `data.table::rbindlist()` at the end of the sampling, a `lapply()` iteration loop was created where it binds rows to itself through each iteration. This eliminated the use of the `data.table` and `foreach` packages. Messages indicating which polygon is being sampled is given throughout as well, moreso for debugging.
 
-3.  Map predictions are made using a tiling system (scripts `predict_landscape.R` and `tile_index.R`). In my own objectives, I had over 100 covariate rasters and they were all rather large in size. This proved to be problematic when it came to map predictions, since I could not load all of the covariates into memory to perform the predictions. What happens instead is that the entire study area is broken up into smaller tiles (hard set at 500 x 500 pixels, though this can be adjusted), then model predictions are carried out on the tiles, and finally after the model predictions are finished the tiles are mosaicked back together. This method uses the [`stars`](https://github.com/r-spatial/stars) package to load raster tiles into memory. Depending on if the prediction type was set to "prob" or not, different outputs of the prediction process are curated: "prob" returns a character vector of file paths of the mosaicked rasters, and "raw" will return a mosaicked raster of the raw predictions. Both ways are taken care of when `dsmart()` is called.
+3.  Map predictions are made using the `terra` package. In a previous version of my coding, I implemented a tiling system to load smaller tiles to be predicted using the `stars` package; however, recent updates to the model prediction strategies used in `terra` made my own method obsolete. This also removed the dependency of `stars`. Trained `mlr3` learners (models) are passed to `terra`'s predict function and predictions are carried out across each row. In some model realisations, classes are dropped in order to create models. The missing classes are added back into the model predictions to generate the probabilities of those classes being present (which would be 0). There is an option to set the number of cores for the model prediction, but currently there is a lot of overhead on parallelism in `terra`, which makes it not very efficient to do but can be re-examined in the future ([see this post on GitHub](https://github.com/rspatial/terra/issues/178)).
 
 4.  Since C++ computing is implemented, we no longer have to worry about the number of cores a computer system has. This argument is removed in all contexts.
 
-5.  An argument in the `predict_landscapte` function is `mask`, which is simply a character vector of the name of the raster covariate layer used to mask the predicted area where necessary. If this argument is left blank (or NULL), it is automatically calculated as the raster covariate layer with the greatest number of data pixels. This argument is followed through in both `disaggregate` and `dsmart` functions, and is automatically calculated in the `disaggregate` function if it is not specified.
+5.  The `summarise` function uses `sort` and `order` to calculate the most probable classes and determine their respective probabilities. C++ versions of these commands are implemented to significantly reduce processing time. I don't have a lot of experience with C++ so I might not have the most efficient methods coded, but they currently work to mimic the results from base R implementations of the same functions.
 
-6.  General messages about the tiling outputs have been incorporated. Additionally, messages pop up during summarizing that indicate what is going on as well.
+6.  Messages pop up during summarizing that indicate what is going on at a given point in time.
 
-Other functions, like the `sort_stack_values()` have not been recreated here, though it wouldn't be difficult to do that either if it is necessary. One thing that I can think of that may be a future issue would be if there were many realisations with large file sizes, then tiling may be necessary to incorporate in order to complete some of the `summarise()` steps, though until it becomes a larger issue I don't really want to incorporate that.
+Other functions, like the `sort_stack_values()` have not been recreated here, though it wouldn't be difficult to do that either if it is necessary.
 
 I also want to point out that this package has different package dependencies than the original `rdsmart` package. The full list is:
 
@@ -28,7 +63,7 @@ I also want to point out that this package has different package dependencies th
 
 -   `terra`
 
--   `stars`
+-   `mlr3verse`
 
 I also make heavy use of the `sf` package, but that is depended on by the `stars` package when installed and loaded, hence why it is not included in that list. The `tidyverse` packages that are used throughout include:
 
@@ -40,7 +75,7 @@ I also make heavy use of the `sf` package, but that is depended on by the `stars
 
 -   `tibble`
 
-On the topic of package dependencies, I will also note here that either `caret` or `C50` is required for the modelling, though I didn't include it in the above list. It depends on the users input, and if `caret` is used then subsequent modelling packages may be required as well.
+On the topic of package dependencies, I will also note here that when a model type is chosen, `mlr3` will attempt to load it and set the model arguments (args.model) before generating samples. If the model you are trying to load is not installed, `mlr3` will attempt to install and load it before proceeding. If it fails, it will be on the user to install the modelling package.
 
 If any of the original developers of the `rdsmart()` package get a chance to read/try this, I would greatly appreciate any feedback and criticisms that you may have! I didn't do this to step on any of your toes and I hope this isn't coming off as such. I had been working with the `terra` package recently and thought that this would be a good exercise at trying some new things out.
 
