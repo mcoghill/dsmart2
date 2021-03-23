@@ -5,14 +5,14 @@
 # specifically using "ranger". First, a bulk load of all of the packages for
 # this run is necessary:
 
-ls <- c("tidyverse", "terra", "stars", "raster", "caret", "ranger", "MLmetrics")
+ls <- c("tidyverse", "terra", "raster", "snow")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
 
 # Make sure terra package is up to date! This may take a moment
-if(compareVersion(as.character(packageVersion("terra")), "1.0-7") < 0)
-  install.packages("terra")
+if(compareVersion(as.character(packageVersion("terra")), "1.1-9") < 0)
+  remotes::install_github("rspatial/terra")
 invisible(lapply(ls, library, character.only = TRUE)[0])
 rm(ls, new.packages)
 
@@ -38,10 +38,13 @@ dsmart2 <- dsmart(
   composition = dalrymple_composition,
   observations = dalrymple_observations,
   rate = 15, reals = 10, outputdir = outputdir)
-# That took slightly over 2 minutes
+
+# That took slightly over 4 minutes
 # Now, let's see how long it takes using the default package
-# Remove functions so package doesn't get confused
-rm(disaggregate, dsmart, summarise, .allocate, .getStratifiedVirtualSamples, .getVirtualSamples, .observations)
+# Restart R and remove the loaded objects, starting from scratch
+
+.rs.restartR()
+rm(list = ls())
 
 # Load package and associated data
 library(rdsmart)
@@ -63,26 +66,4 @@ dsmart_default <- rdsmart::dsmart(
   outputdir = outputdir, 
   cpus = parallel::detectCores()
 )
-# That took 6 minutes, 3 times longer than dsmart2
-
-
-# debugging
-covariates = dalrymple_covariates
-polygons = dalrymple_polygons
-composition = dalrymple_composition
-observations = dalrymple_observations
-rate = 15 
-reals = 10
-method.sample = "by_polygon"
-method.allocate = "weighted"
-method.model = NULL
-args.model = NULL
-strata = NULL
-nprob = 3
-outputdir = file.path(getwd(), "dsmart2")
-stub = NULL
-factors = NULL
-type = "raw"
-tilesize = 500
-outDir = file.path(outputdir, "tiles")
-mask = NULL
+# That took ~20 minutes, 5 times longer than dsmart2 and it failed as well.
