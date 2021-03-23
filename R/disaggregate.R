@@ -99,8 +99,8 @@
 #'   that will be prepended to all output.
 #' @param factors A character vector with the names of the covariates that
 #'   should be treated as factors.
-#' @param prob A character vector to specify the type of the predictions. By
-#'   default, raw class predictions are used. If set to "prob", a multiband
+#' @param type A character vector to specify the type of the predictions. By
+#'   default, raw class predictions are used ("response"). If set to "prob", a multiband
 #'   SpatRaster with class probabilities will be produced for each realisation.
 #'
 #' @return A list that contains metadata about the current run of
@@ -142,15 +142,19 @@ disaggregate <- function(
   covariates, polygons, composition, rate = 15, reals = 100, 
   observations = NULL, method.sample = "by_polygon", method.allocate = "weighted", 
   method.model = NULL, args.model = NULL, strata = NULL, outputdir = getwd(), 
-  stub = NULL, factors = NULL, type = "raw", mask = NULL, predict = TRUE) {
+  stub = NULL, factors = NULL, type = "response", predict = TRUE) {
   
   # Requires the following packages:
-  sapply(c("tidyverse", "stars", "terra"), 
-         require, character.only = TRUE)[0]
+  invisible(sapply(c("tidyverse", "terra", "mlr3verse", "corrplot"), 
+                   require, character.only = TRUE))
+  
+  # Remove terra progress bars
+  def_ops <- terra:::spatOptions()$progress
+  terraOptions(progress = 0)
+  on.exit(terraOptions(progress = def_ops))
   
   # Source external functions used in this script
   source("./R/helpers.R")
-  source("./R/predict_landscape.R")
   
   # Create list to store output
   output <- base::list()
@@ -188,31 +192,44 @@ disaggregate <- function(
       messages <- append(messages, "'strata': Not a valid SpatRaster\n")
     }
   }
-  if(!(is.null(method.model))) {
-    if(!(is.character(method.model) & length(method.model) == 1)) {
-      messages <- append(messages, "'method.model' must be NULL or a single character value.\n")
-    }
-  }
   if(length(messages) > 1) {
     stop(messages)
   }
   
-  # If method.model is a character value, load the caret package
+  # If method.model is a character value, enforce proper learner detection
+  valid_learners <- mlr3extralearners::list_mlr3learners(filter = list(
+    class = "classif", predict_types = type,
+    properties = "multiclass"), select = c("name", "id", "required_packages"))
+  
   if(is.character(method.model) & length(method.model) == 1) {
-    require(caret)
-    # Repeated cross validation generates the best model anyway, no need to
-    # repeat the model for multiple realisations if this is the case
-    if(args.model$trControl$method == "repeatedcv" &&
-       is.numeric(args.model$trControl$repeats)) {
-      reals <- 1
-    }
-    # Override probability method in the trainControl function
-    if(type == "prob") {
-      args.model$trControl$classProbs <- TRUE
+    
+    filt_learner <- valid_learners[name == method.model]
+    if(!nrow(filt_learner)) {
+      filt_learner <- valid_learners[id == method.model]
     } else {
-      args.model$trControl$classProbs <- FALSE
+      method.model <- paste0("classif.", method.model)
+      filt_learner <- valid_learners[id == method.model]
     }
-  } else require(C50)
+    if(!nrow(filt_learner)) {
+      stop("This is not a valid learner for your use. See here for a list of
+             \rvalid learner names and ids:
+             \rmlr3extralearners::list_mlr3learners(filter = list(
+      \r  class = 'classif', predict_types = '", type, "',
+      \r  properties = 'multiclass'))")
+    }
+  } else {
+    method.model <- "classif.C50"
+  }
+  
+  # Check that required package is installed and loaded for use
+  pkgs <- unlist(valid_learners[id == method.model]$required_packages)
+  pkg_require <- pkgs[!(pkgs %in% installed.packages()[, "Package"])]
+  if(length(pkg_require)) mlr3extralearners::install_learners(method.model)
+  invisible(sapply(pkgs, require, character.only = TRUE))
+  
+  # Check that model arguments will work as expected
+  model <- lrn(method.model, predict_type = type)
+  model$param_set$values <- args.model
   
   # Set stub to "" if NULL
   if(is.null(stub)) {
@@ -324,6 +341,66 @@ disaggregate <- function(
   write.table(samples, file.path(outputdir, subdir, paste0(stub, "virtual_samples.txt")), 
               sep = ",", quote = FALSE, col.names = TRUE, row.names = FALSE)
   
+  
+  # Column number of samples' first covariate
+  startcol <- numeric(0)
+  if(is.null(strata)) {
+    startcol = 8
+  } else {
+    startcol = 9
+  }
+  
+  # Create correlation matrix - first need variances to see if there are vars
+  # with zero variance
+  variance <- samples[, startcol:ncol(samples)] %>% 
+    dplyr::mutate(across(where(is.factor), as.integer)) %>% 
+    apply(2, var, na.rm = TRUE)
+  var_valid <- names(variance[variance > 0])
+  
+  cor_mat <- samples[, startcol:ncol(samples)] %>% 
+    dplyr::select(any_of(var_valid)) %>% 
+    dplyr::mutate(across(where(is.factor), as.integer)) %>% 
+    cor(method = "pearson")
+  
+  task_cor <- TaskClassif$new(
+    id = "correlation", 
+    backend = samples[, (startcol - 1):ncol(samples)] %>% 
+      dplyr::select(soil_class, all_of(var_valid)) %>% 
+      dplyr::mutate(across(where(is.factor) & !all_of("soil_class"), as.integer),
+                    soil_class = as.factor(soil_class)),
+    target = "soil_class")
+  
+  cor <- flt("find_correlation", method = "pearson")
+  cor$calculate(task_cor)
+  cor_mat_out <- as.data.frame(cor_mat) %>% 
+    rownames_to_column("feature") %>% 
+    merge(as.data.table(cor)) %>% 
+    dplyr::mutate(score = 1 - score) %>% 
+    dplyr::rename(pearson_score = score)
+  
+  # Remove correlated variables 
+  samples <- samples[, startcol:ncol(samples)] %>% 
+    dplyr::select(
+      as.data.table(cor) %>% 
+        dplyr::filter(score >= (1 - 0.95)) %>% 
+        dplyr::pull(feature)) %>% 
+    bind_cols(samples[, 1:(startcol - 1)], .)
+  
+  # Save correlation image and matrix
+  cor_out <- function(cor_matrix) {
+    jpeg(file.path(outputdir, subdir, paste0(stub, "correlation_matrix.jpg")), 
+         width = 10, height = 10, units = "in", pointsize = 12, res = 300)
+    corrplot.mixed(cor_mat, lower = "number", upper = "circle", tl.pos = "lt",
+                   diag = "u", order = "AOE", lower.col = "black", 
+                   title = "Predictor Correlation", cl.cex = 1, number.cex = 0.83,
+                   mar = c(0, 0, 2, 0))
+    dev.off()
+    return(invisible())
+  }
+  cor_out(cor_mat)
+  write.csv(cor_mat_out, file.path(outputdir, subdir, paste0(stub, "correlation_matrix.csv")), 
+            row.names = FALSE)
+  
   # We submit the target classes to C5.0 as a factor. To do that, we need to 
   # make sure that the factor has the full set of levels, since due to the 
   # randomness of the allocation procedure we can't assume that they are all
@@ -354,21 +431,14 @@ disaggregate <- function(
   for (j in 1:reals) {
     message("\n", Sys.time(), " Realisation ", j)
     
-    # Column number of samples' first covariate
-    startcol <- numeric(0)
-    if(is.null(strata)) {
-      startcol = 8
-    } else {
-      startcol = 9
-    }
-    
     # Extract sample covariates for the current realisation
     s <- samples[which(samples$realisation == j), startcol:ncol(samples)]
     soil_class <- as.character(samples$soil_class[which(samples$realisation == j)])
     
     # Concatenate observations if they exist
     if(!(is.null(observations))) {
-      s <- rbind(s, observations[, 8:ncol(observations)])
+      o <- observations %>% dplyr::select(all_of(names(s)))
+      s <- rbind(s, o)
       soil_class <- append(soil_class, as.character(observations$soil_class))
     }
     
@@ -388,19 +458,14 @@ disaggregate <- function(
     rclt <- cbind(c(1:sum(table(soil_class) != 0)), 
                   c(1:length(table(soil_class)))[table(soil_class) != 0])
     
+    # Create mlr3 task from data
+    task <- TaskClassif$new(id = "data", backend = cbind(soil_class = soil_class, s), 
+                            target = "soil_class")$droplevels()
+    
     # Fit model
-    if(is.null(method.model)) {
-      model <- C50::C5.0(s, y = soil_class)
-      out <- utils::capture.output(summary(model))
-    } else {
-      # Note: As of July 2020, mlr/mlr3 methods do NOT increase the speed here
-      # The train function does not accept factors in which there are levels 
-      # which have 0 cases. These levels must therefore be dropped.
-      soil_class <- base::droplevels(soil_class)
-      model <- base::do.call(caret::train, c(list(
-        x = s, y = soil_class, method = method.model), args.model))
-      out <- utils::capture.output(model$finalModel)
-    }
+    model <- model$train(task)
+    model_out <- model$model
+    out <- utils::capture.output(model_out)
     
     # Save model to text file
     model_dir <- file.path(
@@ -408,92 +473,90 @@ disaggregate <- function(
       paste0(stub, "model_", formatC(j, width = nchar(reals), format = "d", flag = "0")))
     cat(out, file = paste0(model_dir, ".txt"), sep = "\n", append = FALSE)
     
-    # Save model to rdata file
-    save(model, file = paste0(model_dir, ".RData"))
+    # Save model to RDS file
+    saveRDS(model_out, file = paste0(model_dir, ".rds"))
     output$locations$models <- c(
-      output$locations$models, paste0(model_dir, ".RData")
+      output$locations$models, paste0(model_dir, ".rds")
     )
     
-    # Model prediction using tiling method
+    # Model prediction
     if(predict) {
-      if(type != "prob") {
-        # If raw class predictions are specified (default), predict realisation 
-        # and save it to raster.
-        r1 <- predict_landscape(
-          model, covariates, tilesize = 500,
-          outDir = file.path(outputdir, "tiles"), type = type) 
-        
-        # If levels were dropped from soil_class in order to use the train function,
-        # the prediction raster must be reclassified in order to ensure that the
-        # integer values represent the same soil types across the realizations.
-        if(zeroes == TRUE & is.null(method.model) == FALSE) {
-          r1 <- terra::classify(
-            r1, rcl = rclt, filename = file.path(
-              outputdir, subdir, "realisations", 
-              paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
-                                                   format = "d", flag = "0"), ".tif")), 
-            overwrite = TRUE, wopt = list(datatype = "INT2S"))
+      # Create predictive function to work with mlr3 learner models for either
+      # probability or classification modelling
+      pf <- function(model, ...) {
+        if(model$predict_type == "prob") {
+          p <- model$predict_newdata(...)$data$prob
+          if(length(levs) != ncol(p)) {
+            missing <- setdiff(levs, colnames(p))
+            pm <- matrix(0, ncol = length(missing), nrow = nrow(p), dimnames = list(NULL, missing))
+            p <- cbind(p, pm)
+            p <- p[, levs]
+          }
+          p
         } else {
-          r1 <- terra::writeRaster(r1, filename = file.path(
-            outputdir, subdir, "realisations", 
-            paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
-                                                 format = "d", flag = "0"), ".tif")), 
-            overwrite = TRUE, wopt = list(datatype = "INT2S"))
+          model$predict_newdata(...)$data$response
         }
-      } else {
-        # If probabilistic predictions are specified, produce a SpatRaster with
-        # the probabilities of each soil class as separate layers
-        if(zeroes == FALSE | is.null(method.model)) {
-          # If no levels were dropped from soil_class in order to use the train
-          # function, the SpatRaster can be used as it is.
-          r1 <- predict_landscape(
-            model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob")
-          r1 <- subset(r1, 1:nrow(lookup))
-          r1 <- writeRaster(r1, file.path(
+      }
+      if(type == "prob") {
+        r1 <- predict(
+          subset(covariates, task$feature_names), model, na.rm = TRUE, fun = pf,
+          filename = file.path(
             outputdir, subdir, "realisations",
-            paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
-                                                 format = "d", flag = "0"), ".tif")),
-            overwrite = TRUE)
-          
-        } else {
-          # If levels were dropped from soil_class in order to use the train 
-          # function, rasters with probabilities for the missing levels must be 
-          # inserted in the SpatRaster. First, the SpatRaster is predicted as above.
-          tmp1 <- predict_landscape(
-            model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob")
-          
-          # Then, a raster with 0's is calculated (the missing levels have 0 
-          # probability for the realisation in question)
-          tmp2 <- (subset(tmp1, 1) * 0)
-          if(sources(tmp2)[, "source"] == "")
-            tmp2 <- writeRaster(tmp2, tempfile(pattern = "spat_", fileext = ".tif"))
-          
-          # The rasters are then all arranged into a single SpatRaster
-          r1 <- rast(lapply(1:nrow(lookup), function(i) {
-            if(i %in% rclt[, 2]) {
-              subset(tmp1, which(rclt[, 2] == i))
-            } else {
-              tmp2
-            }
-          })) %>% stats::setNames(lookup$name) %>% 
-            writeRaster(file.path(
-              outputdir, subdir, "realisations",
-              paste0(stub, "realisation_", formatC(j, width = nchar(reals),
-                                                   format = "d", flag = "0"), ".tif")), 
-              overwrite = TRUE)
-          rm(tmp1, tmp2)
-        }
+            paste0(stub, "realisation_", formatC(
+              j, width = nchar(reals), format = "d", flag = "0"), ".tif")),
+          overwrite = TRUE, wopt = list(names = lookup$name)
+        )
+      } else {
+        # If classification prediction, it will predict for the non-dropped
+        # classes. Those classes will be attributed and then an index made
+        # afterwards.
+        tmp1 <- terra::predict(
+          subset(covariates, task$feature_names), model, na.rm = TRUE, fun = pf,
+          filename = tempfile(pattern = "spat_", fileext = ".tif"),
+          wopt = list(
+            datatype = "INT2S",
+            names = paste0(stub, "realisation_", formatC(
+              j, width = nchar(reals), format = "d", flag = "0"))))
+        
+        # Convert integer classes to factor levels
+        tmp2 <- as.factor(tmp1)
+        
+        # Get the factor levels and labels from the converted raster
+        tmp_labels <- data.frame(levels = levels(tmp2)[[1]]$levels,
+                                 code = levels(tmp2)[[1]]$labels)
+        
+        # Merge the lookup tables so that factor levels show which soil class
+        # corresponds to a given level and lookup code
+        tmp_lookup <- lookup %>%
+          merge(tmp_labels) %>%
+          dplyr::select(levels, name, code)
+        
+        # Write the merged index
+        write.csv(tmp_lookup, file.path(
+          outputdir, subdir, "realisations",
+          paste0(stub, "realisation_", formatC(j, width = nchar(reals),
+                                               format = "d", flag = "0"), "_lut.csv")),
+          row.names = FALSE)
+        
+        # Apply the new factor levels to the raster
+        levels(tmp2) <- tmp_lookup[, c(1, 2)]
+        
+        # Write out the completed raster (does so with associated .xml file
+        # identifying the class labels)
+        r1 <- writeRaster(tmp2, filename = file.path(
+          outputdir, subdir, "realisations",
+          paste0(stub, "realisation_", formatC(j, width = nchar(reals),
+                                               format = "d", flag = "0"), ".tif")),
+          overwrite = TRUE, wopt = list(datatype = "INT1U"))
       }
       
       # Save output realisation paths
       output$locations$realisations <- c(
         output$locations$realisations, sources(r1)[, "source"])
+      
+      # Remove temporary files from system
+      suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
     }
-    
-    # Remove temporary files from system
-    suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
   }
   
   # Save finish time
