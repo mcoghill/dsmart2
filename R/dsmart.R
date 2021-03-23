@@ -128,7 +128,7 @@ dsmart <- function(
   covariates, polygons, composition, rate = 15, reals = 100, 
   observations = NULL, method.sample = "by_polygon", method.allocate = "weighted", 
   method.model = NULL, args.model = NULL, strata = NULL, nprob = 3, 
-  outputdir = getwd(), stub = NULL, factors = NULL, type = "raw") {
+  outputdir = getwd(), stub = NULL, factors = NULL, type = "response") {
   
   # Requires the following packages:
   sapply(c("tidyverse", "terra"), 

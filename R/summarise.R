@@ -70,7 +70,7 @@
 summarise <- function(
   realisations, lookup, 
   n.realisations = ifelse(is.list(realisations), length(realisations), terra::nlyr(realisations)), 
-  nprob = 3, outputdir = getwd(), stub = NULL, type = "raw") {
+  nprob = 3, outputdir = getwd(), stub = NULL, type = "response") {
   
   # Requires the following packages:
   sapply(c("tidyverse", "terra"), 
