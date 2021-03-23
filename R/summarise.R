@@ -76,6 +76,9 @@ summarise <- function(
   sapply(c("tidyverse", "terra"), 
          require, character.only = TRUE)[0]
   
+  Rcpp::sourceCpp("./src/order.cpp")
+  Rcpp::sourceCpp("./src/sort.cpp")
+  
   # Create list to store output
   output <- base::list()
   
@@ -159,6 +162,32 @@ summarise <- function(
   cat("\nComputing class probabilities from realisations")
   if(type != "prob") {
     
+    if(any(is.factor(realisations))) {
+      
+      realisations.factor <- subset(realisations, which(is.factor(realisations)))
+      realisations.numeric <- if(length(which(!is.factor(realisations)))) {
+        subset(realisations, which(!is.factor(realisations)))
+      } else NULL
+      
+      # It's assumed that the lookup table has the integer values coding the 
+      # factor names, so use that to inform the integer conversion
+      realisations.integer <- rast(lapply(1:nlyr(realisations.factor), function(x) {
+        r <- subset(realisations.factor, x)
+        r.levs <- data.frame(levels = levels(r)[[1]]$levels,
+                             name = levels(r)[[1]]$labels)
+        
+        r.levs.merge <- merge(r.levs, lookup) %>% 
+          dplyr::select(levels, code) %>% 
+          as.matrix()
+        
+        r.int <- terra::classify(r, r.levs.merge)
+        
+      }))
+      
+      realisations <- rast(c(realisations.numeric, realisations.integer))
+      
+    }
+    
     # Compute counts
     counts <- terra::app(realisations, function(x) {
       if(is.na(sum(x))) {
@@ -190,59 +219,72 @@ summarise <- function(
             outputdir, subdir, "probabilities", 
             paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")),
             overwrite = TRUE, wopt = list(names = lookup$name[which(lookup$code == i)]))
-        # return(terra::app(rlist, fun = "mean", na.rm = TRUE, filename = file.path(
-        #   outputdir, subdir, "probabilities", 
-        #   paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")), 
-        #   overwrite = TRUE))
-      })) %>% stats::setNames(lookup$name)
+      }))
     }
   }
   
   # Compute the class indices of the n-most-probable soil classes
   cat("\nGenerating most probable classification rasters")
   ind.names <- paste0(stub, "mostprob_", 
-                      formatC(1:nlyr(probs), width = nchar(nrow(lookup)), 
+                      formatC(1:max(2, nprob), width = nchar(nrow(lookup)), 
                               format = "d", flag = "0"), "_class")
   ordered.indices <- if(type != "prob") {
     # If raw class predictions are used, use "counts" for indicing.
     terra::app(counts, function(x) {
       if(is.na(sum(x))) {
-        rep(NA, nlyr(probs))
+        rep(NA, max(2, nprob))
       } else {
-        order(x, decreasing = TRUE, na.last = TRUE)
+        order_cpp(x, decreasing = TRUE)[1:max(2, nprob)]
       }
-    }, wopt = list(names = ind.names, datatype = "INT2S"))[[1:nprob]]
+    }, wopt = list(names = ind.names, datatype = "INT2S"))
   } else {
     # If probabilistic predictions are used, use "probs" for indicing.
     terra::app(probs, function(x) {
       if(is.na(sum(x))) {
-        rep(NA, nlyr(probs))
+        rep(NA, max(2, nprob))
       } else {
-        order(x, decreasing = TRUE, na.last = TRUE)
+        order_cpp(x, decreasing = TRUE)[1:max(2, nprob)]
       }
-    }, wopt = list(names = ind.names, datatype = "INT2S"))[[1:nprob]]
+    }, wopt = list(names = ind.names, datatype = "INT2S"))
   } 
   
-  # Write ith-most-probable soil class raster to file. Ordering will fill areas
-  # that are supposed to be NA, so mask NA areas with the mask layer
-  ordered.indices <- terra::writeRaster(
-    ordered.indices, filename = file.path(
+  # Change to be a factor and write ith-most-probable soil class raster to file
+  ordered.indices.factors <- rast(lapply(1:nprob, function(x) {
+    ordered.indices.factor <- as.factor(subset(ordered.indices, x))
+    
+    lookup_labels <- data.frame(levels = levels(ordered.indices.factor)[[1]]$levels,
+                                code = levels(ordered.indices.factor)[[1]]$labels)
+    
+    label_lookup <- lookup %>% 
+      merge(lookup_labels) %>% 
+      dplyr::select(levels, name, code)
+    
+    write.csv(label_lookup, file.path(
       outputdir, subdir, "mostprobable", 
-      paste0(ind.names[1:nprob], ".tif")), 
-    overwrite = TRUE, wopt = list(datatype = "INT2S"))
+      paste0(names(ordered.indices.factor), "_lut.csv")),
+      row.names = FALSE)
+    
+    levels(ordered.indices.factor) <- label_lookup[, c(1, 2)]
+    
+    ordered.indices.factor <- terra::writeRaster(
+      ordered.indices.factor, filename = file.path(
+        outputdir, subdir, "mostprobable", 
+        paste0(names(ordered.indices.factor), ".tif")), 
+      overwrite = TRUE, wopt = list(datatype = "INT1U"))
+  }))
   
   # Compute the class probabilities of the n-most-probable soil classes
   cat("\nCalculating probabilities of classification rasters being accurate")
   prob.names <- paste0(stub, "mostprob_", formatC(
-    1:nlyr(probs), width = nchar(nrow(lookup)), format = "d", flag = "0"), 
+    1:max(2, nprob), width = nchar(nrow(lookup)), format = "d", flag = "0"), 
     "_probs")
   ordered.probs <- terra::app(probs, function(x) {
     if(is.na(sum(x))) {
-      rep(NA, nlyr(probs))
+      rep(NA, max(2, nprob))
     } else {
-      sort(x, decreasing = TRUE, na.last = TRUE)
+      sort_cpp(x, decreasing = TRUE, nalast = TRUE)[1:max(2, nprob)]
     }
-  }, wopt = list(names = prob.names))[[1:max(2, nprob)]]
+  }, wopt = list(names = prob.names))
   
   # Compute the confusion index on the class probabilities
   cat("\nGenerating confusion index raster from the class probabilities")
@@ -256,21 +298,13 @@ summarise <- function(
   # See rationale in section 2.5 of Kempen et al. (2009) "Updating the 1:50,000
   # Dutch soil map"
   cat("\nGenerating Shannon diversity raster (entropy) from the class probabilities")
-  shannon <- terra::app(ordered.probs, function(x) {
-    -sum(x * (log(x, base = length(x))), na.rm = TRUE)}) %>% 
-    terra::mask(confusion, filename = file.path(
-      outputdir, subdir, "mostprobable", 
-      paste0(stub, "shannon.tif")), overwrite = TRUE, 
+  shannon <- -sum(
+    ordered.probs * (log(ordered.probs, base = nlyr(ordered.probs))),
+    na.rm = TRUE) %>%
+    terra::writeRaster(file.path(
+      outputdir, subdir, "mostprobable",
+      paste0(stub, "shannon.tif")), overwrite = TRUE,
       wopt = list(names = "shannon"))
-  
-  # This will hopefully work in a newer "terra" version, will be faster:
-  # shannon <- -sum(
-  #   ordered.probs * (log(ordered.probs, base = nlyr(ordered.probs))), 
-  #   na.rm = TRUE) %>% 
-  #   terra::writeRaster(file.path(
-  #     outputdir, subdir, "mostprobable", 
-  #     paste0(stub, "shannon.tif")), overwrite = TRUE, 
-  #     wopt = list(names = "shannon"))
   
   # Write ith-most-probable soil class probability raster to file
   cat("\nWriting probability raster(s)")
