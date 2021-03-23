@@ -229,7 +229,11 @@ disaggregate <- function(
   
   # Check that model arguments will work as expected
   model <- lrn(method.model, predict_type = type)
-  model$param_set$values <- args.model
+  if(!is.null(args.model)) {
+    if(inherits(args.model, "list")) {
+      model$param_set$values <- args.model
+    } else stop("args.model does not inherit a list format")
+  }
   
   # Set stub to "" if NULL
   if(is.null(stub)) {
