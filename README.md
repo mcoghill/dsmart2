@@ -39,11 +39,15 @@ These objects are passed into the `disaggregate` function to create the model wi
     18: predict.all ParamLgl    NA    NA       2          FALSE      
     19:       nodes ParamLgl    NA    NA       2          FALSE  
 
-In the above example, anything in the `id` column can be placed in the `args.model` list; for example, `args.model = list(mtry = 3, ntree = 100, importance = "gini")`. See `lrn$param_set$levels` for a list of valid entries that may be used, or read the respective model package help page (i.e.: `?randomForest::randomForest`).
+In the above example, anything in the `id` column can be placed in the `args.model` list; for example,
+
+    args.model = list(mtry = 3, ntree = 100, importance = "gini")
+
+See `lrn$param_set$levels` for a list of valid entries that may be used, or read the respective model package help page (i.e.: `?randomForest::randomForest`).
 
 Some important notes on the changes made, starting in the `disaggregate()` coding:
 
-1.  `mlr3` coding is used to generate all model types, including the `C5.0` defaults. Model types in this program are only allowed to be classification or probability based. No model resampling is performed here - this is a more recent update. Previously, the `caret` package was used to generate models that were not default, and you could perform model resampling within that coding if you wished. I chose to eliminate resampling here for simplicity, since the idea of using this algorithm is to generate multiple model predictions (realisations) anyways, which then get sent to a summarising function. Additionally, the use of `mlr3` model types allowed for a more simple model prediction script since the folks at `mlr3` generate model predictions all in the same object slots no matter the model type. This worked wonderfully.
+1.  `mlr3` coding is used to generate all model types, including the `C5.0` defaults. Model types in this program are only allowed to be classification or probability based. No model resampling is performed here - this is a more recent update. Previously, the `caret` package was used to generate models that were not default, and you could perform model resampling within that coding if you wished. I chose to eliminate resampling here for simplicity, since the idea of using this algorithm is to generate multiple model predictions (realisations) anyways, which then get sent to a summarising function. Additionally, the use of `mlr3` model types allowed for a more simple model prediction script since the folks at `mlr3` generate model predictions all in the same object slots no matter the model type. This worked wonderfully and was easy to provide a simple interface to, much like how the original `rdsmart` package worked well with `caret` models.
 
 2.  The methods for sampling polygons all stayed the same, just using the `terra` package implementation over using `raster` and `sp` packages. While writing this, I found it simpler to roll the `.sampler()` function into the `.getVirtualSamples()` function, as it provided a cleaner comparison to the `.getStrtifiedVirtualSamples()` function. Additionally, rather than using `data.table::rbindlist()` at the end of the sampling, a `lapply()` iteration loop was created where it binds rows to itself through each iteration. This eliminated the use of the `data.table` and `foreach` packages. Messages indicating which polygon is being sampled is given throughout as well, moreso for debugging.
 
@@ -65,7 +69,11 @@ I also want to point out that this package has different package dependencies th
 
 -   `mlr3verse`
 
-I also make heavy use of the `sf` package, but that is depended on by the `stars` package when installed and loaded, hence why it is not included in that list. The `tidyverse` packages that are used throughout include:
+-   `corrplot`
+
+-   `Rcpp` (only for compiling the `sort_cpp` and `order_cpp` functions)
+
+The `tidyverse` packages that are used throughout include:
 
 -   `dplyr`
 
