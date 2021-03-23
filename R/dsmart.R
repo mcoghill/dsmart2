@@ -80,7 +80,7 @@
 #'   that will be prepended to all output.
 #' @param factors A character vector with the names of the covariates that should
 #'   be treated as factors.
-#' @param prob A character vector to specify the type of the predictions. By
+#' @param type A character vector to specify the type of the predictions. By
 #'   default, raw class predictions are used. Each realisation will produce a 
 #'   map of soil classes, and class probabilities will be calculated from the
 #'   frequency of each class across the realisations. If set to "prob", each
@@ -128,7 +128,7 @@ dsmart <- function(
   covariates, polygons, composition, rate = 15, reals = 100, 
   observations = NULL, method.sample = "by_polygon", method.allocate = "weighted", 
   method.model = NULL, args.model = NULL, strata = NULL, nprob = 3, 
-  outputdir = getwd(), stub = NULL, factors = NULL, type = "raw", mask = NULL) {
+  outputdir = getwd(), stub = NULL, factors = NULL, type = "raw") {
   
   # Requires the following packages:
   sapply(c("tidyverse", "terra"), 
@@ -207,7 +207,7 @@ dsmart <- function(
   output$timing$finish <- Sys.time()
   
   # Cleanup temp files
-  terra::tmpFiles(old = TRUE, remove = TRUE)
+  suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
   
   # Return output
   return(output)
